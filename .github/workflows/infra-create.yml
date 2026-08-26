@@ -1,65 +1,31 @@
-name: Debug GitHub OIDC
-
-on:
-  push:
-    branches:
-      - main
+name: Terraform Deployment
+on: [push]
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  debug-oidc:
+  deploy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./terraform
 
     steps:
-      - name: Get and Inspect OIDC Claims
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
-          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-        run: |
-          set -e
+      - uses: actions/checkout@v4
 
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Ref: $GITHUB_REF"
-          echo "Event: $GITHUB_EVENT_NAME"
+      - name: Fetch Keys from Vault
+        uses: hashicorp/vault-action@v3
+        with:
+          url: http://3.236.180.38:8200
+          role: gh-actions-role
+          method: jwt
+          secrets: |
+            aws/creds/terraform-role access_key | AWS_ACCESS_KEY_ID ;
+            aws/creds/terraform-role secret_key | AWS_SECRET_ACCESS_KEY
 
-          JWT=$(curl -sSf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://github.com/mrstark316-lgtm" \
-            | jq -r '.value')
-
-          echo "OIDC token obtained."
-
-          PAYLOAD=$(echo "$JWT" | cut -d '.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null)
-
-          echo "OIDC claims:"
-          echo "$PAYLOAD" | jq '{
-            iss,
-            aud,
-            sub,
-            repository,
-            repository_id,
-            repository_owner,
-            repository_owner_id,
-            event_name,
-            ref
-          }'
-
-          echo "Testing Vault authentication..."
-
-          RESPONSE=$(curl -sS \
-            -X POST \
-            -H "Content-Type: application/json" \
-            --data "$(jq -n \
-              --arg jwt "$JWT" \
-              --arg role "gh-actions-role" \
-              '{jwt: $jwt, role: $role}')" \
-            http://3.236.180.38:8200/v1/auth/jwt/login)
-
-          echo "$RESPONSE" | jq '{
-            auth_success: (.auth != null),
-            policies: (.auth.policies // []),
-            errors: (.errors // [])
-          }'
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init
+      - run: terraform plan
+      - run: terraform apply -auto-approve
