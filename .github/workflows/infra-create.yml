@@ -1,32 +1,62 @@
-name: Test Vault JWT Login
-  env:
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-  run: |
-    set -e
+name: Test Vault OIDC
 
-    echo "Repository: $GITHUB_REPOSITORY"
-    echo "Ref: $GITHUB_REF"
-    echo "Event: $GITHUB_EVENT_NAME"
+on:
+  push:
+    branches:
+      - main
 
-    JWT=$(curl -sSf \
-      -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://github.com/mrstark316-lgtm" \
-      | jq -r '.value')
+permissions:
+  id-token: write
+  contents: read
 
-    echo "GitHub OIDC token obtained successfully"
+jobs:
+  test-vault:
+    runs-on: ubuntu-latest
 
-    RESPONSE=$(curl -sS \
-      -X POST \
-      -H "Content-Type: application/json" \
-      --data "$(jq -n \
-        --arg jwt "$JWT" \
-        --arg role "gh-actions-role" \
-        '{jwt: $jwt, role: $role}')" \
-      http://3.236.180.38:8200/v1/auth/jwt/login)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    echo "$RESPONSE" | jq '{
-      auth_success: (.auth != null),
-      policies: (.auth.policies // []),
-      errors: (.errors // [])
-    }'
+      - name: Show GitHub Context
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+
+      - name: Test GitHub OIDC with Vault
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        run: |
+          set -e
+
+          echo "Requesting GitHub OIDC token..."
+
+          JWT=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://github.com/mrstark316-lgtm" \
+            | jq -r '.value')
+
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "Failed to obtain GitHub OIDC token"
+            exit 1
+          fi
+
+          echo "GitHub OIDC token obtained successfully"
+
+          echo "Authenticating with Vault..."
+
+          RESPONSE=$(curl -sS \
+            -X POST \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg jwt "$JWT" \
+              --arg role "gh-actions-role" \
+              '{jwt: $jwt, role: $role}')" \
+            http://3.236.180.38:8200/v1/auth/jwt/login)
+
+          echo "$RESPONSE" | jq '{
+            auth_success: (.auth != null),
+            policies: (.auth.policies // []),
+            errors: (.errors // [])
+          }'
